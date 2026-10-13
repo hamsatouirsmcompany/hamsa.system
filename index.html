@@ -716,11 +716,13 @@
     title:'الاشتراكات الخارجية', icon:'🌐', roles:['admin','accommodation'],
     fields: (()=>{
       const base = MODULES.subscriptions.fields.filter(f=>f.key!=='leadId');
+      // بيانات بتتكتب يدويًا (مش من قايمة الموظفين) وبتكون ضمن بيانات العميل
       const extra = [
+        {key:'repName', label:'المندوب', type:'text'},
         {key:'branchName', label:'الفرع (اسم الفرع)', type:'text'},
         {key:'salesName', label:'اسم السليز', type:'text'},
       ];
-      const i = base.findIndex(f=>f.key==='responsiblePerson');
+      const i = base.findIndex(f=>f.key==='governorate');
       base.splice(i>=0? i+1 : base.length, 0, ...extra);
       return base;
     })()
@@ -5928,7 +5930,7 @@
 (function(){
   'use strict';
   const SECTIONS = [
-    ['👤','بيانات العميل',['leadId','customerName','nationalId','phone','gender','governorate']],
+    ['👤','بيانات العميل',['leadId','customerName','nationalId','phone','gender','governorate','repName','branchName','salesName']],
     ['💳','بيانات الاشتراك',['packageType','subscriptionDate','groupName','responsiblePerson','omegaCode','subscriptionStatus','lotteryStatus','travelStatus']],
     ['🏨','الرحلة والتسكين',['tripId','makkahHotelId','makkahRoomId','madinaHotelId','madinaRoomId']],
     ['💰','بيانات الدفع',['subscriptionValue','downPayment','installmentMonths','installmentAmount','paymentDate']],
