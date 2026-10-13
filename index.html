@@ -714,7 +714,16 @@
   // المدير والتسكين بس يشوفوها ويضيفوا ويعدلوا. جدول مستقل (external_subscriptions).
   MODULES.external_subscriptions = {
     title:'الاشتراكات الخارجية', icon:'🌐', roles:['admin','accommodation'],
-    fields: MODULES.subscriptions.fields.filter(f=>f.key!=='leadId')
+    fields: (()=>{
+      const base = MODULES.subscriptions.fields.filter(f=>f.key!=='leadId');
+      const extra = [
+        {key:'branchName', label:'الفرع (اسم الفرع)', type:'text'},
+        {key:'salesName', label:'اسم السليز', type:'text'},
+      ];
+      const i = base.findIndex(f=>f.key==='responsiblePerson');
+      base.splice(i>=0? i+1 : base.length, 0, ...extra);
+      return base;
+    })()
   };
 
   const LEDGER_FIELDS = [
@@ -4037,6 +4046,18 @@
     else { const [y,m]=p.month.split('-').map(Number); const d=new Date(y,m-1+dir,1); p.month=d.getFullYear()+'-'+tgPad(d.getMonth()+1); }
   }
   function tgGoals(rec){ const g=(rec&&rec.goals)||{}; return (typeof g==='object')? g : (()=>{ try{ return JSON.parse(g)||{}; }catch(_){ return {}; } })(); }
+  // id ثابت لكل تارجت (نوع + اسم + فترة) — بنعتمد عليه في البحث لأن Google Sheets
+  // ممكن يحوّل مفتاح الفترة (مثلًا 2026-10) لتاريخ فالمقارنة النصية تفشل والتارجت يختفي.
+  function tgTargetId(scopeType, name, periodType, key){
+    return ['tg',scopeType,normName(name).replace(/\s+/g,'_'),periodType,key].join('|');
+  }
+  function tgKeyMatch(raw, periodType, key){
+    const s = String(raw==null?'':raw).trim();
+    if(s===key) return true;
+    const m = s.match(/^(\d{4})-(\d{2})(?:-(\d{2}))?/);
+    if(!m) return false;
+    return periodType==='monthly' ? (m[1]+'-'+m[2])===key : (m[0]===key && !!m[3]);
+  }
   function tgCount(goals, list){ return list.reduce((s,k)=>s+(Number(goals[k])||0),0); }
 
   async function renderTargetsSection(page){
@@ -4065,8 +4086,12 @@
       list.forEach(s=>{ if(by[s.packageType]!==undefined) by[s.packageType]++; });
       return by;
     };
-    const targetRec = (scopeType, name)=> targets.find(r=>r.kind==='target' && r.scopeType===scopeType && r.periodType===P.type && String(r.periodKey)===per.key
-      && (scopeType==='team' ? normTeam(r.teamName)===normTeam(name) : sameName(r.employeeName,name)));
+    const targetRec = (scopeType, name)=>{
+      const wantId = tgTargetId(scopeType, name, P.type, per.key);
+      return targets.find(r=>String(r.id)===wantId)
+        || targets.find(r=>r.kind==='target' && r.scopeType===scopeType && r.periodType===P.type && tgKeyMatch(r.periodKey, P.type, per.key)
+          && (scopeType==='team' ? normTeam(r.teamName)===normTeam(name) : sameName(r.employeeName,name)));
+    };
     const incentive = ach => tgCount(ach,TG_UMRAH)*rU + tgCount(ach,TG_HAJJ)*rH;
     const cell = (g,a)=> g ? `<span style="font-weight:700;color:${a>=g?'var(--success)':'var(--navy-800)'};">${a}</span> / ${g}` : (a? `<b>${a}</b>` : '<span style="color:var(--muted);">—</span>');
     const pct = (a,g)=> g? Math.min(100,Math.round(a/g*100)) : 0;
@@ -4184,7 +4209,7 @@
       try{
         const goals={};
         TG_ALL.forEach((k,i)=>{ const v=Number(bg.querySelector('[data-g="'+i+'"]').value)||0; if(v>0) goals[k]=v; });
-        const id = rec ? rec.id : ['tg',scopeType,normName(name).replace(/\s+/g,'_'),periodType,per.key].join('|');
+        const id = rec ? rec.id : tgTargetId(scopeType, name, periodType, per.key);
         const row = {...(rec||{}), id, kind:'target', scopeType, periodType, periodKey:per.key, goals};
         if(scopeType==='team') row.teamName=name; else row.employeeName=name;
         await apiAdd('targets', row);
