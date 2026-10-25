@@ -879,31 +879,34 @@
     return data;
   }
 
-  async function sheetRequestBulk(tables){
+  async function sheetRequestBulk(tables, since){
     if(!GOOGLE_SHEETS_WEBHOOK) throw new Error('رابط Google Sheets غير مضبوط');
     if(!HOMSA_SESSION) throw new Error('انتهت جلسة الدخول — سجّل الدخول مرة أخرى');
     const data=await fetchJsonT(GOOGLE_SHEETS_WEBHOOK,{method:'POST',
       headers:{'Content-Type':'text/plain;charset=utf-8'},
-      body:JSON.stringify({action:'bulk',tables,payload:{},session:HOMSA_SESSION}),
+      body:JSON.stringify({action:'bulk',tables,payload:{},session:HOMSA_SESSION,since:since||undefined}),
       cache:'no-store'}, 60000);
     if(!data) throw new Error('استجابة غير صالحة من الخادم');
     if(!data.ok){
       if(data.error==='Unauthorized') clearSession();
       throw new Error(data.error||'فشل تحميل البيانات من Google Sheets');
     }
-    return data.tables||{};
+    const out = data.tables||{};
+    try{ Object.defineProperty(out,'__sigs',{value:data.sigs||{}}); }catch(_){}
+    return out;
   }
 
   /* ---------------- الكاش + التحميل ---------------- */
   const cache = {};
   const cacheTime = {};
+  const cacheSig = {};          // table -> بصمة نسخة السيرفر اللي معانا (عشان السيرفر يقول "ما اتغيّرش" من غير ما يبعت الجدول)
   const inflight = {};          // table -> Promise (طلب شغال دلوقتي)
   let dataGen = 0;              // بيزيد عند تسجيل الخروج عشان أي رد متأخر يتجاهل
   let lastRefresh = Date.now();
   let prefetching = false;
   let needRerender = false;
 
-  function invalidate(key){ cache[key] = null; }
+  function invalidate(key){ cache[key] = null; delete cacheSig[key]; }
 
   function cacheUpsertLocal(table, record){
     if(!cache[table] || !record || record.id===undefined) return;
@@ -963,7 +966,7 @@
       const jobs = others.map(single);
       if(bulk.length){
         jobs.push((async()=>{
-          try{ const res = await sheetRequestBulk(bulk); bulk.forEach(t=>setRows(t, res[t])); }
+          try{ const res = await sheetRequestBulk(bulk); const sg=res.__sigs||{}; bulk.forEach(t=>{ setRows(t, res[t]); if(sg[t]) cacheSig[t]=sg[t]; }); }
           catch(e){
             console.error('bulk load error, falling back to single loads', e);
             if(!state.user) return;
@@ -1082,11 +1085,14 @@
         const chunks = chunkArray(normal, size).concat(heavy.map(t=>[t]));
         await Promise.all(chunks.map(async ch=>{
           try{
-            const res = await sheetRequestBulk(ch);
+            const since = {}; ch.forEach(t=>{ if(cacheSig[t]) since[t]=cacheSig[t]; });
+            const res = await sheetRequestBulk(ch, since);
             if(gen!==dataGen) return;
+            const sg = res.__sigs || {};
             for(const t of ch){
               if(gen!==dataGen) return;
-              if(res[t]){ applyRows(t, res[t]); await new Promise(r=>setTimeout(r,0)); }
+              if(res[t]){ applyRows(t, res[t]); if(sg[t]) cacheSig[t]=sg[t]; await new Promise(r=>setTimeout(r,0)); }
+              else if(sg[t] && sg[t]===since[t]){ cacheTime[t]=Date.now(); } // السيرفر قال: ما اتغيّرش
             }
           }catch(e){
             console.warn('background refresh failed', ch, e);
@@ -1236,6 +1242,7 @@
     touched.clear(); stale.clear(); resync.clear();
     Object.keys(cache).forEach(k=>delete cache[k]);
     Object.keys(cacheTime).forEach(k=>delete cacheTime[k]);
+    Object.keys(cacheSig).forEach(k=>delete cacheSig[k]);
     Object.keys(inflight).forEach(k=>delete inflight[k]);
     batchQueue.clear(); batchPromise = null;
     if(retryTimer){ clearTimeout(retryTimer); retryTimer=null; }
