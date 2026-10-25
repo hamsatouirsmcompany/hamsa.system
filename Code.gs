@@ -2035,11 +2035,23 @@ function sheetTz() {
   }
   return _sheetTz;
 }
+// Utilities.formatDate بطيئة جدًا (كانت بتتنادى مرتين لكل خلية تاريخ في كل صف = سبب بطء/تعليق التحديث).
+// 1) أي وقت مش على دقيقة كاملة مستحيل يكون منتصف الليل في أي توقيت → ISO مباشرة من غير formatDate.
+// 2) التواريخ بتتكرر كتير (نفس اليوم في صفوف كتير) فبنحفظ الناتج لكل لحظة داخل نفس التنفيذ.
+// النتيجة النهائية نفس القديمة بالظبط.
+const _dateMemo = {};
 function dateCellToString(d) {
-  if (isNaN(d.getTime())) return '';
+  const ms = d.getTime();
+  if (isNaN(ms)) return '';
+  if (ms % 60000 !== 0) return d.toISOString();
+  const hit = _dateMemo[ms];
+  if (hit !== undefined) return hit;
   const tz = sheetTz();
-  if (Utilities.formatDate(d, tz, 'HH:mm:ss') === '00:00:00') return Utilities.formatDate(d, tz, 'yyyy-MM-dd');
-  return d.toISOString();
+  const out = Utilities.formatDate(d, tz, 'HH:mm:ss') === '00:00:00'
+    ? Utilities.formatDate(d, tz, 'yyyy-MM-dd')
+    : d.toISOString();
+  _dateMemo[ms] = out;
+  return out;
 }
 
 function rowValuesToObject(h, row) {
