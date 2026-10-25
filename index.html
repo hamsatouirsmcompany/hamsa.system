@@ -1040,8 +1040,8 @@
     for(const r of b){
       const o = m.get(String(r.id));
       if(!o) return false;
-      const keys = new Set([...Object.keys(o), ...Object.keys(r)]);
-      for(const k of keys){ if(normVal(o[k])!==normVal(r[k])) return false; }
+      for(const k in o){ const x=o[k], y=r[k]; if(x!==y && normVal(x)!==normVal(y)) return false; }
+      for(const k in r){ if(!(k in o) && normVal(r[k])!=='') return false; }
     }
     return true;
   }
@@ -1084,7 +1084,10 @@
           try{
             const res = await sheetRequestBulk(ch);
             if(gen!==dataGen) return;
-            ch.forEach(t=>{ if(res[t]) applyRows(t, res[t]); });
+            for(const t of ch){
+              if(gen!==dataGen) return;
+              if(res[t]){ applyRows(t, res[t]); await new Promise(r=>setTimeout(r,0)); }
+            }
           }catch(e){
             console.warn('background refresh failed', ch, e);
             if(gen!==dataGen || !state.user) return;
@@ -1100,13 +1103,13 @@
       } finally { refreshBusy=false; refreshPromise=null; lastRefresh=Date.now(); lastRefreshFailed = failed; }
       if(refreshLater.size){ const again=[...refreshLater]; refreshLater.clear(); setTimeout(()=>refreshTables(again), 200); }
       if(!state.user){ render(); return changed; }
-      if(changed.length) onDataChanged(changed);
+      if(changed.length) setTimeout(()=>onDataChanged(changed), 60);
       return changed;
     })();
     return refreshPromise;
   }
   function refreshAll(){
-    return refreshTables(Object.keys(cache).filter(k=>cache[k]));
+    return refreshTables(Object.keys(cache).filter(k=>cache[k] && (k!=='edit_logs' || state.view==='edit_logs')));
   }
 
   /* ---------------- طابور الكتابة في الخلفية ---------------- */
