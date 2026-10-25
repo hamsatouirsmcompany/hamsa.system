@@ -522,6 +522,14 @@
 
   /* موبايل */
   .menu-toggle{box-shadow:var(--shadow);margin-bottom:14px;}
+  /* زرار تحديث البيانات: عائم أعلى الشاشة (ظاهر دايمًا من غير ما تنزل لآخر القايمة) */
+  .fab-refresh{position:fixed;top:10px;left:10px;z-index:60;display:inline-flex;align-items:center;gap:6px;height:38px;padding:0 14px;border-radius:999px;background:#2f4a7a;color:#fff;font-size:13px;font-weight:700;box-shadow:0 4px 14px rgba(0,0,0,.22);cursor:pointer;border:0;}
+  .fab-refresh:hover{background:#3b5b93;}
+  .fab-refresh:disabled{opacity:.85;cursor:progress;}
+  .fab-refresh.busy{animation:fab-pulse 1s ease-in-out infinite;}
+  @keyframes fab-pulse{50%{opacity:.55;}}
+  @media (max-width:760px){.fab-refresh{top:8px;left:8px;height:36px;padding:0 12px;} .fab-refresh .fab-label{display:none;} .fab-refresh{width:36px;padding:0;justify-content:center;font-size:16px;}}
+
   @media (max-width:900px){.v2-sec-b{grid-template-columns:1fr;} .main{padding:22px;}}
   @media (max-width:760px){.sidebar{width:min(300px,86vw);} .sidebar.open{box-shadow:var(--shadow-lg);} .main{padding:16px;}
     .modal{padding:18px;} .modal h3{margin:-18px -18px 16px;padding:16px 18px 12px;} .modal-actions{bottom:-18px;}}
@@ -1050,32 +1058,52 @@
     render();
   }
   let refreshBusy = false;
+  let refreshPromise = null;     // التحديث الشغال دلوقتي (لو اتضغط الزرار وقتها نستنّاه بدل ما نرجّع "محدّث بالفعل")
+  let lastRefreshFailed = [];    // الجداول اللي فشل تحديثها في آخر مرة
   const refreshLater = new Set();
   async function refreshTables(tables){
     const keys = [...new Set(tables)].filter(t=>cache[t] && canReadTable(t));
     if(!keys.length || !state.user) return [];
-    if(refreshBusy){ keys.forEach(t=>refreshLater.add(t)); return []; } // مايتضيعش: يتنفذ بعد الحالي
+    if(refreshBusy){ keys.forEach(t=>refreshLater.add(t)); return refreshPromise || []; } // مايتضيعش: يتنفذ بعد الحالي
     refreshBusy = true;
-    const gen = dataGen, t0 = Date.now(), changed = [];
-    try{
-      const size = Math.max(1, Math.ceil(keys.length/3));
-      await Promise.all(chunkArray(keys, size).map(async ch=>{
-        try{
-          const res = await sheetRequestBulk(ch);
-          if(gen!==dataGen) return;
-          ch.forEach(t=>{
-            if(!res[t]) return;
-            const rows = rebasePending(t, res[t], t0);
-            if(!sameRows(cache[t], rows)){ cache[t]=rows; changed.push(t); }
-            cacheTime[t]=Date.now();
-          });
-        }catch(e){ console.warn('background refresh failed', e); }
-      }));
-    } finally { refreshBusy=false; lastRefresh=Date.now(); }
-    if(refreshLater.size){ const again=[...refreshLater]; refreshLater.clear(); setTimeout(()=>refreshTables(again), 200); }
-    if(!state.user){ render(); return changed; }
-    if(changed.length) onDataChanged(changed);
-    return changed;
+    refreshPromise = (async()=>{
+      const gen = dataGen, t0 = Date.now(), changed = [], failed = [];
+      const applyRows = (t, serverRows)=>{
+        if(gen!==dataGen || !Array.isArray(serverRows)) return;
+        const rows = rebasePending(t, serverRows, t0);
+        if(!sameRows(cache[t], rows)){ cache[t]=rows; changed.push(t); }
+        cacheTime[t]=Date.now();
+      };
+      try{
+        // سجل التعديلات (edit_logs) بيكبر طول الوقت: بنطلبه لوحده عشان بطأه ما يعطّلش باقي الجداول.
+        const heavy = keys.filter(t=>t==='edit_logs');
+        const normal = keys.filter(t=>t!=='edit_logs');
+        const size = Math.max(1, Math.ceil(normal.length/3));
+        const chunks = chunkArray(normal, size).concat(heavy.map(t=>[t]));
+        await Promise.all(chunks.map(async ch=>{
+          try{
+            const res = await sheetRequestBulk(ch);
+            if(gen!==dataGen) return;
+            ch.forEach(t=>{ if(res[t]) applyRows(t, res[t]); });
+          }catch(e){
+            console.warn('background refresh failed', ch, e);
+            if(gen!==dataGen || !state.user) return;
+            // الطلب المجمّع فشل/اتأخر: نجرّب كل جدول لوحده، فجدول بطيء واحد ما يوقّفش تحديث الباقي.
+            if(ch.length>1){
+              await Promise.all(ch.map(async t=>{
+                try{ applyRows(t, await sheetRequest('list', t)); }
+                catch(e2){ console.warn('refresh failed for', t, e2); failed.push(t); }
+              }));
+            } else failed.push(ch[0]);
+          }
+        }));
+      } finally { refreshBusy=false; refreshPromise=null; lastRefresh=Date.now(); lastRefreshFailed = failed; }
+      if(refreshLater.size){ const again=[...refreshLater]; refreshLater.clear(); setTimeout(()=>refreshTables(again), 200); }
+      if(!state.user){ render(); return changed; }
+      if(changed.length) onDataChanged(changed);
+      return changed;
+    })();
+    return refreshPromise;
   }
   function refreshAll(){
     return refreshTables(Object.keys(cache).filter(k=>cache[k]));
@@ -2303,11 +2331,11 @@
               <div class="avatar">${esc(state.user.name[0])}</div>
               <div><div class="name">${esc(state.user.name)}</div><div class="role">${esc(ROLE_LABELS[state.user.role])}</div></div>
             </div>
-            <button class="logout-btn" id="refresh-btn" style="margin-bottom:6px;background:#2f4a7a;">🔄 تحديث البيانات</button>
             <button class="logout-btn" id="account-btn" style="margin-bottom:6px;background:#3a3a3a;">تغيير بيانات الدخول</button>
             <button class="logout-btn" id="logout-btn">تسجيل الخروج</button>
           </div>
         </div>
+        <button id="refresh-btn" class="fab-refresh" title="تحديث البيانات" aria-label="تحديث البيانات">🔄<span class="fab-label">تحديث</span></button>
         <div class="main">
           <button class="menu-toggle" id="menu-toggle">☰ القائمة</button>
           <div id="page"><div class="page-inline-loading">⏳ جاري تجهيز البيانات…</div></div>
@@ -2325,9 +2353,20 @@
     });
     document.getElementById('account-btn').addEventListener('click', openChangeAccountForm);
     document.getElementById('refresh-btn').addEventListener('click', async ()=>{
-      const b=document.getElementById('refresh-btn'); if(b) b.disabled=true;
-      try{ const ch = await refreshAll(); showToast(ch && ch.length ? 'تم تحديث البيانات' : 'البيانات محدّثة بالفعل','ok'); }
-      finally{ if(b) b.disabled=false; }
+      const b=document.getElementById('refresh-btn'); if(!b || b.disabled) return;
+      b.disabled=true; b.classList.add('busy'); b.title='جاري التحديث…';
+      try{
+        const ch = await refreshAll();
+        if(lastRefreshFailed.length){
+          showToast('تعذّر تحديث: '+lastRefreshFailed.map(t=>{ try{ return tableTitle(t)||t; }catch(_){ return t; } }).join('، ')+' — تأكد من الاتصال وحاول مرة أخرى','error');
+        } else {
+          showToast(ch && ch.length ? 'تم تحديث البيانات' : 'البيانات محدّثة بالفعل','ok');
+        }
+      }catch(e){
+        console.error('manual refresh failed', e);
+        showToast('تعذّر تحديث البيانات: '+((e&&e.message)||'خطأ غير معروف'),'error');
+      }
+      finally{ const nb=document.getElementById('refresh-btn'); if(nb){ nb.disabled=false; nb.classList.remove('busy'); nb.title='تحديث البيانات'; } }
     });
     document.getElementById('menu-toggle').addEventListener('click', ()=>{
       state.sidebarOpen=!state.sidebarOpen;
