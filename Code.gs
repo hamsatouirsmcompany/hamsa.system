@@ -110,6 +110,9 @@ function doPost(e) {
       // نفشّل الطلب كله (كده جدول واحد ممنوع مايبوّظش تحميل باقي الجداول).
       const out = {};
       const skipped = [];
+      const sigs = {};
+      const unchanged = [];
+      const since = (body.since && typeof body.since === 'object') ? body.since : {};
       for (let i=0;i<tables.length;i++) {
         const t = tables[i];
         if (!isAllowedTable(t) || !isTableReadAllowed(session, t)) {
@@ -117,9 +120,14 @@ function doPost(e) {
           continue;
         }
         const filtered = filterRowsForSession(getCachedRows(t), t, session);
-        out[t] = sanitizeRowsForClient(t, filtered, session);
+        const rows = sanitizeRowsForClient(t, filtered, session);
+        // بصمة المحتوى: لو المتصفح معاه نفس البصمة، مابنبعتش الجدول (بيوفّر التحميل والتفكيك والمقارنة عنده).
+        const sig = rowsSignature(rows);
+        sigs[t] = sig;
+        if (since[t] && String(since[t]) === sig) { unchanged.push(t); continue; }
+        out[t] = rows;
       }
-      return json({ok:true, tables:out, skipped:skipped});
+      return json({ok:true, tables:out, skipped:skipped, sigs:sigs, unchanged:unchanged});
     }
 
     if (action === 'logout') {
@@ -1277,6 +1285,12 @@ function filterRowsForSession(rows, table, session) {
   }
 
   return rows;
+}
+
+function rowsSignature(rows) {
+  try {
+    return Utilities.base64Encode(Utilities.computeDigest(Utilities.DigestAlgorithm.MD5, JSON.stringify(rows), Utilities.Charset.UTF_8));
+  } catch (_) { return ''; }
 }
 
 function sanitizeRowsForClient(table, rows, session) {
