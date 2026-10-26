@@ -1054,11 +1054,18 @@
     if(a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName) && root.contains(a)) return true;
     return false;
   }
+  let rerenderTimer = null;
   function onDataChanged(){
     if(!state.user || !root.querySelector('.shell')) return;
     if(isUserBusy() || syncQ.length){ needRerender = true; return; }
     needRerender = false;
-    render();
+    // إعادة الرسم بتتأجّل لوقت فاضي في المتصفح وبتتجمّع (مرة واحدة بس) عشان الصفحة ماتتجمّدش بعد التحديث.
+    if(rerenderTimer) return;
+    const run = ()=>{ rerenderTimer = null; if(!state.user || isUserBusy() || syncQ.length){ needRerender = true; return; } render(); };
+    rerenderTimer = setTimeout(()=>{
+      if(typeof requestIdleCallback==='function') requestIdleCallback(run, {timeout:800});
+      else requestAnimationFrame(run);
+    }, 120);
   }
   let refreshBusy = false;
   let refreshPromise = null;     // التحديث الشغال دلوقتي (لو اتضغط الزرار وقتها نستنّاه بدل ما نرجّع "محدّث بالفعل")
@@ -1067,7 +1074,7 @@
   async function refreshTables(tables){
     const keys = [...new Set(tables)].filter(t=>cache[t] && canReadTable(t));
     if(!keys.length || !state.user) return [];
-    if(refreshBusy){ keys.forEach(t=>refreshLater.add(t)); return refreshPromise || []; } // مايتضيعش: يتنفذ بعد الحالي
+    if(refreshBusy){ keys.forEach(t=>refreshLater.add(t)); return refreshPromise || Promise.resolve([]); } // مايتضيعش: يتنفذ بعد الحالي
     refreshBusy = true;
     refreshPromise = (async()=>{
       const gen = dataGen, t0 = Date.now(), changed = [], failed = [];
@@ -1076,6 +1083,7 @@
         const rows = rebasePending(t, serverRows, t0);
         if(!sameRows(cache[t], rows)){ cache[t]=rows; changed.push(t); }
         cacheTime[t]=Date.now();
+        rows.length = rows.length; // no-op: يحافظ على نفس المرجع
       };
       try{
         // سجل التعديلات (edit_logs) بيكبر طول الوقت: بنطلبه لوحده عشان بطأه ما يعطّلش باقي الجداول.
@@ -1099,10 +1107,12 @@
             if(gen!==dataGen || !state.user) return;
             // الطلب المجمّع فشل/اتأخر: نجرّب كل جدول لوحده، فجدول بطيء واحد ما يوقّفش تحديث الباقي.
             if(ch.length>1){
-              await Promise.all(ch.map(async t=>{
-                try{ applyRows(t, await sheetRequest('list', t)); }
-                catch(e2){ console.warn('refresh failed for', t, e2); failed.push(t); }
-              }));
+              for(const part of chunkArray(ch, 3)){
+                await Promise.all(part.map(async t=>{
+                  try{ applyRows(t, await sheetRequest('list', t)); }
+                  catch(e2){ console.warn('refresh failed for', t, e2); failed.push(t); }
+                }));
+              }
             } else failed.push(ch[0]);
           }
         }));
@@ -2366,7 +2376,10 @@
       const b=document.getElementById('refresh-btn'); if(!b || b.disabled) return;
       b.disabled=true; b.classList.add('busy'); b.title='جاري التحديث…';
       try{
-        const ch = await refreshAll();
+        const ch = await Promise.race([
+          refreshAll(),
+          new Promise((_,rej)=>setTimeout(()=>rej(new Error('التحديث أخذ وقتًا أطول من المعتاد، حاول مرة أخرى')), 45000))
+        ]);
         if(lastRefreshFailed.length){
           showToast('تعذّر تحديث: '+lastRefreshFailed.map(t=>{ try{ return tableTitle(t)||t; }catch(_){ return t; } }).join('، ')+' — تأكد من الاتصال وحاول مرة أخرى','error');
         } else {
