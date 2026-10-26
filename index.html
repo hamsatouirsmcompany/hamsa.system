@@ -1913,7 +1913,8 @@
   // render واحد في نفس الوقت: لو اتطلب أكتر من مرة (ضغطات سريعة) بينفّذ آخر حالة بس،
   // فمفيش صفحة قديمة تكتب فوق صفحة أحدث.
   let renderStartedAt = 0;
-  function render(){
+  function render(force){
+    if(force){ renderRun = null; }   // التنقل من القائمة: يبدأ رسم جديد فورًا بدل ما يستنى رسم قديم عالق
     // لو في render شغال بنأجّل الجديد عليه، لكن لو فضل أكتر من 20 ثانية (طلب معلّق)
     // بنتجاهله ونبدأ واحد جديد عشان التنقل بين الأقسام مايقفش.
     if(renderRun && Date.now()-renderStartedAt<8000){ renderAgain = true; return renderRun; }
@@ -2375,10 +2376,17 @@
       if(rerenderTimer){ clearTimeout(rerenderTimer); rerenderTimer = null; }
       needRerender = false;
       state.view=b.dataset.view; state.indoorLeadsType=null; state.sidebarOpen=false;
+      // نقفل القائمة فورًا (على الموبايل/النافذة الضيقة) من غير ما نستنى الرسم.
+      const sbEl = root.querySelector('.sidebar'); if(sbEl) sbEl.classList.remove('open');
+      // نفصل عن أي رسم قديم عالق: عنصر صفحة جديد، والرسم القديم يكمل في عنصر مفصول ومايظهرش.
       const pg = document.getElementById('page');
-      if(pg) pg.innerHTML = '<div class="page-inline-loading">⏳ جاري فتح القسم…</div>';
+      if(pg){
+        const fresh = document.createElement('div'); fresh.id = 'page';
+        fresh.innerHTML = '<div class="page-inline-loading">⏳ جاري فتح القسم…</div>';
+        pg.id = 'page-stale'; pg.replaceWith(fresh);
+      }
       updateActiveNav();
-      render();
+      render(true);
     }));
     document.getElementById('logout-btn').addEventListener('click', async ()=>{
       const btn=document.getElementById('logout-btn');
