@@ -1916,7 +1916,7 @@
   function render(){
     // لو في render شغال بنأجّل الجديد عليه، لكن لو فضل أكتر من 20 ثانية (طلب معلّق)
     // بنتجاهله ونبدأ واحد جديد عشان التنقل بين الأقسام مايقفش.
-    if(renderRun && Date.now()-renderStartedAt<20000){ renderAgain = true; return renderRun; }
+    if(renderRun && Date.now()-renderStartedAt<8000){ renderAgain = true; return renderRun; }
     renderStartedAt = Date.now(); renderAgain = false;
     let run;
     run = (async()=>{
@@ -2368,7 +2368,18 @@
         </div>
       </div>`;
 
-    root.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click', ()=>{ state.view=b.dataset.view; state.indoorLeadsType=null; state.sidebarOpen=false; render(); }));
+    root.querySelectorAll('.nav-item').forEach(b=>b.addEventListener('click', ()=>{
+      // التنقل له الأولوية: نلغي أي إعادة رسم تلقائية معلّقة بعد "تحديث البيانات"، ونوري فورًا إن الضغطة اتسجّلت.
+      const mainEl = root.querySelector('.main');
+      if(mainEl && lastRenderedView) viewScroll[lastRenderedView] = mainEl.scrollTop;
+      if(rerenderTimer){ clearTimeout(rerenderTimer); rerenderTimer = null; }
+      needRerender = false;
+      state.view=b.dataset.view; state.indoorLeadsType=null; state.sidebarOpen=false;
+      const pg = document.getElementById('page');
+      if(pg) pg.innerHTML = '<div class="page-inline-loading">⏳ جاري فتح القسم…</div>';
+      updateActiveNav();
+      render();
+    }));
     document.getElementById('logout-btn').addEventListener('click', async ()=>{
       const btn=document.getElementById('logout-btn');
       if(btn) btn.disabled=true;
