@@ -998,7 +998,9 @@
     return batchPromise;
   }
 
+  let renderReads = new Set();   // الجداول اللي الشاشة الحالية قرأتها (عشان نعيد الرسم بس لو واحد منهم اتغيّر)
   async function getData(key){
+    renderReads.add(key);
     if(cache[key]) return cache[key];
     await queueTable(key);
     return cache[key] || [];
@@ -1006,6 +1008,7 @@
 
   async function getDataMany(keys){
     const uniq = [...new Set(keys)];
+    uniq.forEach(k=>renderReads.add(k));
     await Promise.all(uniq.map(k=>queueTable(k)));
     const out={}; keys.forEach(k=>out[k]=cache[k]||[]); return out;
   }
@@ -1055,8 +1058,10 @@
     return false;
   }
   let rerenderTimer = null;
-  function onDataChanged(){
+  function onDataChanged(changedTables){
     if(!state.user || !root.querySelector('.shell')) return;
+    // لو الجداول اللي اتغيّرت مالهاش علاقة بالشاشة المفتوحة: مفيش داعي لإعادة رسم (دي كانت سبب التعليق).
+    if(Array.isArray(changedTables) && renderReads.size && !changedTables.some(t=>renderReads.has(t))) return;
     if(isUserBusy() || syncQ.length){ needRerender = true; return; }
     needRerender = false;
     // إعادة الرسم بتتأجّل لوقت فاضي في المتصفح وبتتجمّع (مرة واحدة بس) عشان الصفحة ماتتجمّدش بعد التحديث.
@@ -1939,6 +1944,7 @@
     const prev = lastRenderedView;
     if(main && prev && prev!==state.view) viewScroll[prev] = main.scrollTop;
     const keepTop = (main && prev===state.view) ? main.scrollTop : null;
+    renderReads = new Set();
     const timer = setTimeout(()=>setPageLoading(true), 150); // لودر صغير فقط لو التحميل اتأخر
     try{ await renderPage(); }
     finally{ clearTimeout(timer); setPageLoading(false); }
