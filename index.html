@@ -2567,11 +2567,20 @@
           <td>${esc(ROLE_LABELS[u.role]||u.role)}</td>
           <td>${u.status==='inactive'?'<span class="badge red">موقوف</span>':'<span class="badge green">نشط</span>'}</td>
           <td>${u.mustChange?'<span class="badge gold">مؤقتة — لم تُغيَّر بعد</span>':'<span style="color:var(--muted);">••••••••••••</span>'}</td>
-          <td><button class="btn-secondary" style="padding:6px 12px;" data-reset="${esc(u.id)}">تعيين كلمة مرور جديدة</button></td></tr>`).join('')}</tbody></table></div>`;
+          <td style="white-space:nowrap;"><button class="btn-secondary" style="padding:6px 12px;" data-reset="${esc(u.id)}">تعيين كلمة مرور جديدة</button>
+            <button class="btn-secondary" style="padding:6px 10px;color:var(--danger);" title="مسح الحساب" data-delacct="${esc(u.id)}">🗑️</button></td></tr>`).join('')}</tbody></table></div>`;
       body.querySelector('#acct-search').addEventListener('input', e=>{
         const q = e.target.value.trim().toLowerCase();
         body.querySelectorAll('tbody tr').forEach(tr=>{ tr.style.display = !q || tr.dataset.q.includes(q) ? '' : 'none'; });
       });
+      body.querySelectorAll('button[data-delacct]').forEach(b=>b.addEventListener('click', async ()=>{
+        const u = rows.find(x=>String(x.id)===b.dataset.delacct);
+        if(!u) return;
+        if(!confirm('مسح حساب الدخول "'+u.username+'" ('+u.name+') نهائيًا؟ لن يستطيع الدخول به، وسجل الموظف نفسه لن يتأثر.')) return;
+        b.disabled=true;
+        try{ await authRequest('deleteUserAccount',{userId:u.id}); showToast('تم مسح الحساب','ok'); load(); }
+        catch(err){ alert(err.message||'فشل المسح'); b.disabled=false; }
+      }));
       body.querySelectorAll('button[data-reset]').forEach(b=>b.addEventListener('click', ()=>{
         const u = rows.find(x=>String(x.id)===b.dataset.reset);
         if(u) openAdminReset(u, load);
