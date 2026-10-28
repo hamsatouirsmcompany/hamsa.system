@@ -2496,13 +2496,28 @@
   // صفحة المدير: قائمة الطلبات (موافقة / رفض).
   async function renderPasswordRequestsSection(page){
     if(state.user.role!=='admin') return;
-    page.innerHTML = `<div class="page-head"><h2>🔑 طلبات كلمة المرور</h2></div>
+    page.innerHTML = `<div class="page-head"><h2>🔑 طلبات كلمة المرور</h2><button class="btn-secondary" id="pwr-clear-handled" style="width:auto;">🗑️ مسح الطلبات المعالَجة</button></div>
+      <details class="card" id="acct-box" style="margin-bottom:14px;">
+        <summary style="cursor:pointer;font-weight:800;font-size:16px;">🔑 كلمات المرور واسم المستخدم <span style="font-weight:400;font-size:12px;color:var(--muted);">(اضغط للعرض)</span></summary>
+        <div id="acct-body" style="margin-top:12px;"></div>
+      </details>
       <div class="card" id="pwr-card"><div class="page-inline-loading">⏳ جاري تحميل الطلبات…</div></div>`;
+    setupAccountsBox();
     const card = document.getElementById('pwr-card');
     let rows = [];
     try{ rows = (await authRequest('listPasswordRequests',{})).rows || []; }
     catch(err){ card.innerHTML = `<div class="error-box">${esc(err.message||'تعذر تحميل الطلبات')}</div>`; return; }
     state.pwrPending = rows.filter(r=>r.status==='pending').length;
+    const clearBtn = document.getElementById('pwr-clear-handled');
+    if(clearBtn){
+      if(!rows.some(r=>r.status!=='pending')) clearBtn.style.display='none';
+      clearBtn.addEventListener('click', async ()=>{
+        if(!confirm('مسح كل الطلبات المعالَجة (الموافَق عليها والمرفوضة)؟ الطلبات قيد المراجعة لن تتأثر.')) return;
+        clearBtn.disabled=true;
+        try{ const d=await authRequest('deletePasswordRequests',{scope:'handled'}); showToast('تم مسح '+(d.deleted||0)+' طلب','ok'); render(); }
+        catch(err){ alert(err.message||'فشل المسح'); clearBtn.disabled=false; }
+      });
+    }
     const fmt = v=>{ const d=new Date(v); return isNaN(d) ? '' : d.toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}); };
     const badge = st => st==='pending' ? '<span class="badge gold">قيد المراجعة</span>' : st==='approved' ? '<span class="badge green">تمت الموافقة</span>' : '<span class="badge red">مرفوض</span>';
     if(!rows.length){ card.innerHTML = '<div class="assumption-note">لا توجد طلبات حتى الآن.</div>'; return; }
@@ -2516,12 +2531,89 @@
         <td>${r.status==='pending'?'—':esc(r.handledBy)+'<div style="font-size:12px;color:var(--muted);">'+esc(fmt(r.handledAt))+'</div>'}</td>
         <td style="white-space:nowrap;">${r.status==='pending'?`
           <button class="btn-primary btn-gold" style="width:auto;padding:7px 14px;" data-act="approve" data-id="${esc(r.id)}">موافقة</button>
-          <button class="btn-secondary" style="padding:7px 14px;" data-act="reject" data-id="${esc(r.id)}">رفض</button>`:''}</td>
+          <button class="btn-secondary" style="padding:7px 14px;" data-act="reject" data-id="${esc(r.id)}">رفض</button>`:''}
+          <button class="btn-secondary" style="padding:7px 12px;color:var(--danger);" title="مسح الطلب" data-del="${esc(r.id)}">🗑️</button></td>
       </tr>`).join('')}</tbody></table></div>`;
     card.querySelectorAll('button[data-act]').forEach(b=>b.addEventListener('click', ()=>{
       const req = rows.find(x=>String(x.id)===b.dataset.id);
       if(req) openResolvePasswordRequest(req, b.dataset.act);
     }));
+    card.querySelectorAll('button[data-del]').forEach(b=>b.addEventListener('click', async ()=>{
+      const req = rows.find(x=>String(x.id)===b.dataset.del);
+      if(!req) return;
+      const msg = req.status==='pending' ? 'هذا الطلب لم تتم مراجعته بعد. هل تريد مسحه فعلًا؟' : 'مسح هذا الطلب؟';
+      if(!confirm(msg)) return;
+      b.disabled=true;
+      try{ await authRequest('deletePasswordRequests',{ids:[req.id]}); showToast('تم مسح الطلب','ok'); render(); }
+      catch(err){ alert(err.message||'فشل المسح'); b.disabled=false; }
+    }));
+  }
+
+  // مستطيل "كلمات المرور واسم المستخدم": كل الحسابات + تعيين كلمة مرور جديدة (كلمات المرور الحالية مُشفّرة ومش ممكن تتعرض).
+  function setupAccountsBox(){
+    const box = document.getElementById('acct-box'), body = document.getElementById('acct-body');
+    if(!box || !body) return;
+    let loaded = false;
+    const load = async ()=>{
+      body.innerHTML = '<div class="page-inline-loading">⏳ جاري التحميل…</div>';
+      let rows = [];
+      try{ rows = (await authRequest('listUserAccounts',{})).rows || []; }
+      catch(err){ body.innerHTML = `<div class="error-box">${esc(err.message||'تعذر التحميل')}</div>`; loaded=false; return; }
+      body.innerHTML = `<div class="assumption-note">كلمات المرور الحالية محفوظة بشكل مُشفّر ولا يمكن عرضها لأي أحد. من هنا تقدر ترى اسم المستخدم وتعيّن كلمة مرور جديدة تظهر لك مرة واحدة.</div>
+        <input id="acct-search" placeholder="بحث بالاسم أو اسم المستخدم…" style="margin:10px 0;width:100%;" />
+        <div class="table-wrap"><table><thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>الدور</th><th>الحالة</th><th>كلمة المرور</th><th></th></tr></thead>
+        <tbody>${rows.map(u=>`<tr data-q="${esc((u.name+' '+u.username).toLowerCase())}">
+          <td>${esc(u.name)}</td><td dir="ltr" style="text-align:right;user-select:all;">${esc(u.username)}</td>
+          <td>${esc(ROLE_LABELS[u.role]||u.role)}</td>
+          <td>${u.status==='inactive'?'<span class="badge red">موقوف</span>':'<span class="badge green">نشط</span>'}</td>
+          <td>${u.mustChange?'<span class="badge gold">مؤقتة — لم تُغيَّر بعد</span>':'<span style="color:var(--muted);">••••••••••••</span>'}</td>
+          <td><button class="btn-secondary" style="padding:6px 12px;" data-reset="${esc(u.id)}">تعيين كلمة مرور جديدة</button></td></tr>`).join('')}</tbody></table></div>`;
+      body.querySelector('#acct-search').addEventListener('input', e=>{
+        const q = e.target.value.trim().toLowerCase();
+        body.querySelectorAll('tbody tr').forEach(tr=>{ tr.style.display = !q || tr.dataset.q.includes(q) ? '' : 'none'; });
+      });
+      body.querySelectorAll('button[data-reset]').forEach(b=>b.addEventListener('click', ()=>{
+        const u = rows.find(x=>String(x.id)===b.dataset.reset);
+        if(u) openAdminReset(u, load);
+      }));
+    };
+    box.addEventListener('toggle', ()=>{ if(box.open && !loaded){ loaded=true; load(); } });
+  }
+
+  function openAdminReset(u, reload){
+    const bg = document.createElement('div');
+    bg.className = 'modal-bg';
+    bg.innerHTML = `<div class="modal"><h3>كلمة مرور جديدة — ${esc(u.name)}</h3>
+      <form id="ar-form"><div class="form-grid"><div class="field full"><label>كلمة المرور المؤقتة</label>
+        <div style="display:flex;gap:8px;"><input name="newPassword" type="text" minlength="12" dir="ltr" autocomplete="off" placeholder="اتركها فارغة ليولّدها النظام" style="flex:1;" />
+        <button type="button" class="btn-secondary" id="ar-gen">توليد</button></div>
+        <div style="font-size:12px;color:var(--muted);margin-top:6px;">12 حرفًا على الأقل. سيُجبر الموظف على تغييرها عند أول دخول وسيتم إنهاء جلساته المفتوحة.</div></div></div>
+      <div class="modal-actions"><button type="button" class="btn-secondary" id="ar-cancel">إلغاء</button><button type="submit" class="btn-primary btn-gold">تأكيد</button></div></form></div>`;
+    document.body.appendChild(bg);
+    bg.querySelector('#ar-cancel').addEventListener('click', ()=>bg.remove());
+    bg.addEventListener('click', e=>{ if(e.target===bg) bg.remove(); });
+    bg.querySelector('#ar-gen').addEventListener('click', ()=>{
+      const al='ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789', a=new Uint32Array(14); crypto.getRandomValues(a);
+      bg.querySelector('[name=newPassword]').value = Array.from(a,x=>al[x%al.length]).join('');
+    });
+    bg.querySelector('#ar-form').addEventListener('submit', async e=>{
+      e.preventDefault();
+      const form=e.target, btn=form.querySelector('button[type=submit]');
+      btn.disabled=true; const label=btn.textContent; btn.textContent='جارٍ التنفيذ...';
+      try{
+        const d = await authRequest('adminResetPassword',{userId:u.id, newPassword:form.newPassword.value});
+        bg.querySelector('.modal').innerHTML = `<h3>تم التعيين ✅</h3>
+          <div class="assumption-note">سلّم الموظف بيانات الدخول التالية. كلمة المرور <b>لن تظهر مرة أخرى</b>:</div>
+          <div style="margin:14px 0;padding:14px;background:var(--sand-50);border:1px solid var(--line);border-radius:10px;direction:ltr;text-align:center;">
+            <div style="font-size:12px;color:var(--muted);">${esc(d.username)}</div>
+            <div style="font-size:20px;font-weight:800;letter-spacing:1px;margin-top:6px;user-select:all;">${esc(d.tempPassword)}</div></div>
+          <div class="modal-actions"><button type="button" class="btn-secondary" id="ar-copy">نسخ</button><button type="button" class="btn-primary btn-gold" id="ar-done">تم</button></div>`;
+        bg.querySelector('#ar-copy').addEventListener('click', async ()=>{
+          try{ await navigator.clipboard.writeText(d.tempPassword); showToast('تم النسخ','ok'); }catch(_){ showToast('انسخها يدويًا','error'); }
+        });
+        bg.querySelector('#ar-done').addEventListener('click', ()=>{ bg.remove(); reload(); });
+      }catch(err){ alert(err.message || 'فشلت العملية'); btn.disabled=false; btn.textContent=label; }
+    });
   }
 
   function openResolvePasswordRequest(req, act){

@@ -145,6 +145,15 @@ function doPost(e) {
     if (action === 'resolvePasswordRequest') {
       return json(handleResolvePasswordRequest(session, body.payload || {}));
     }
+    if (action === 'listUserAccounts') {
+      return json(handleListUserAccounts(session));
+    }
+    if (action === 'adminResetPassword') {
+      return json(handleAdminResetPassword(session, body.payload || {}));
+    }
+    if (action === 'deletePasswordRequests') {
+      return json(handleDeletePasswordRequests(session, body.payload || {}));
+    }
 
     if (action === 'createEmployeeAccount') {
       return json(handleCreateEmployeeAccount(session, body.payload || {}));
@@ -967,6 +976,90 @@ function handleListPasswordRequests(session) {
   const rows = sh ? readRows(sh) : [];
   rows.sort(function(a, b){ return String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
   return {ok:true, rows: rows.slice(0, 300)};
+}
+
+// مسح طلبات كلمة المرور (للمدير فقط): إما ids محددة، أو scope:'handled' لمسح كل الطلبات المعالَجة (موافَق عليها/مرفوضة).
+function handleDeletePasswordRequests(session, payload) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const scope = String(payload.scope || '');
+  const reqIds = Array.isArray(payload.ids) ? payload.ids.map(String).filter(Boolean) : [];
+  if (scope !== 'handled' && !reqIds.length) return {ok:false, error:'بيانات غير صحيحة'};
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) return {ok:false, error:'Server busy, try again'};
+  try {
+    resetRowsMemo();
+    const sh = SpreadsheetApp.getActive().getSheetByName(PWR_SHEET);
+    if (!sh) return {ok:true, deleted:0};
+    const rows = readRows(sh);
+    let ids;
+    if (scope === 'handled') {
+      ids = rows.filter(function(r){ return String(r.status || '') !== 'pending'; }).map(function(r){ return String(r.id); });
+    } else {
+      const want = {}; reqIds.forEach(function(i){ want[i] = true; });
+      ids = rows.filter(function(r){ return want[String(r.id)]; }).map(function(r){ return String(r.id); });
+    }
+    deleteRowsBatch(sh, ids);
+    SpreadsheetApp.flush();
+    resetRowsMemo();
+    return {ok:true, deleted:ids.length};
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
+}
+
+// قائمة كل الحسابات للمدير: الاسم + اسم المستخدم + الدور + الحالة. (كلمات المرور مخزّنة مُشفّرة ومش ممكن تتعرض.)
+function handleListUserAccounts(session) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const sh = SpreadsheetApp.getActive().getSheetByName('users');
+  const rows = sh ? readRows(sh) : [];
+  const out = rows.map(function(u){
+    return {
+      id: String(u.id || ''), name: String(u.name || ''), username: String(u.username || ''),
+      role: String(u.role || ''), team: String(u.team || ''),
+      status: String(u.status || 'active'),
+      mustChange: String(u.mustChangePassword || '') === 'yes'
+    };
+  });
+  out.sort(function(a, b){ return a.name.localeCompare(b.name, 'ar'); });
+  return {ok:true, rows: out};
+}
+
+// المدير يعيّن كلمة مرور مؤقتة جديدة لأي حساب (بتتعرض له مرة واحدة، والموظف بيتجبر يغيّرها عند أول دخول).
+function handleAdminResetPassword(session, payload) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const userId = String(payload.userId || '');
+  if (!userId) return {ok:false, error:'بيانات غير صحيحة'};
+  if (userId === String(session.uid || '')) return {ok:false, error:'لتغيير كلمة مرورك أنت استخدم "تغيير كلمة المرور" من حسابك'};
+
+  let temp = String(payload.newPassword || '');
+  const generated = !temp;
+  if (generated) temp = generateTempPassword();
+  if (temp.length < PASSWORD_MIN_LENGTH) return {ok:false, error:'كلمة المرور يجب أن تكون 12 حرفًا على الأقل'};
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) return {ok:false, error:'Server busy, try again'};
+  try {
+    resetRowsMemo();
+    const usersSheet = SpreadsheetApp.getActive().getSheetByName('users');
+    if (!usersSheet) return {ok:false, error:'الحسابات غير متاحة'};
+    const uinfo = getRowInfoById(usersSheet, userId);
+    const user = uinfo.obj;
+    if (!user) return {ok:false, error:'الحساب غير موجود'};
+
+    user.passwordSalt = randomSalt();
+    user.passwordAlgo = 'sha256-iterated-v1';
+    user.passwordHash = hashPassword(temp, user.passwordSalt);
+    user.sessionVersion = Number(user.sessionVersion || 1) + 1;
+    user.mustChangePassword = 'yes';
+    upsertRow(usersSheet, user, uinfo);
+    invalidateCachedRows('users');
+    clearLoginFailures(user.username);
+    SpreadsheetApp.flush();
+    return {ok:true, tempPassword:temp, generated:generated, username:String(user.username || ''), name:String(user.name || '')};
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
 }
 
 function generateTempPassword() {
