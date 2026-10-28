@@ -2563,14 +2563,16 @@
     const rows = d.rows||[], locked = d.locked||[];
     const fmt = v=>{ const t=new Date(v); return isNaN(t) ? '' : t.toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}); };
     const badge = ev => ev==='locked' ? '<span class="badge red">🔒 تم القفل '+(d.lockMinutes||10)+' دقائق</span>'
-      : ev==='blocked' ? '<span class="badge gold">محاولة أثناء القفل</span>' : '<span class="badge gold">كلمة مرور خاطئة</span>';
+      : ev==='blocked' ? '<span class="badge gold">محاولة أثناء القفل</span>'
+      : ev==='unknown_user' ? '<span class="badge gold">اسم مستخدم غير موجود</span>'
+      : ev==='inactive' ? '<span class="badge gold">حساب موقوف</span>' : '<span class="badge gold">كلمة مرور خاطئة</span>';
     card.innerHTML = `
       ${locked.length?`<div class="error-box" style="margin-bottom:14px;"><b>مقفولون الآن:</b>
-        ${locked.map(u=>`<span style="display:inline-flex;gap:8px;align-items:center;margin-inline-start:12px;">${esc(u.name)} (<span dir="ltr">${esc(u.username)}</span>)
+        ${locked.map(u=>`<span style="display:inline-flex;gap:8px;align-items:center;margin-inline-start:12px;">${esc(u.name||'')} (<span dir="ltr">${esc(u.username)}</span>)
           <button class="btn-secondary" style="padding:4px 10px;" data-unlock="${esc(u.username)}">فك القفل</button></span>`).join('')}</div>`:''}
       ${rows.length?`<div class="table-wrap"><table><thead><tr><th>الوقت</th><th>الموظف</th><th>اسم المستخدم</th><th>الحدث</th><th>رقم المحاولة</th></tr></thead>
-        <tbody>${rows.map(r=>`<tr><td>${esc(fmt(r.createdAt))}</td><td>${esc(r.name)}</td><td dir="ltr" style="text-align:right;">${esc(r.username)}</td>
-          <td>${badge(r.event)}</td><td>${r.event==='failed'||r.event==='locked'?esc(String(r.attempt||'')):'—'}</td></tr>`).join('')}</tbody></table></div>`
+        <tbody>${rows.map(r=>`<tr><td>${esc(fmt(r.createdAt))}</td><td>${esc(r.name)||'—'}</td><td dir="ltr" style="text-align:right;">${esc(r.username)}</td>
+          <td>${badge(r.event)}</td><td>${r.event==='blocked'?'—':esc(String(r.attempt||''))}</td></tr>`).join('')}</tbody></table></div>`
         :'<div class="assumption-note">لا توجد محاولات دخول فاشلة مسجّلة.</div>'}`;
     card.querySelectorAll('button[data-unlock]').forEach(b=>b.addEventListener('click', async ()=>{
       b.disabled=true;

@@ -629,7 +629,9 @@ function handleLogin(username, password) {
   });
 
   if (!user || String(user.status || 'active') === 'inactive') {
-    recordLoginFailure(username);
+    const badCount = recordLoginFailure(username);
+    logLoginEvent(user || username, user ? 'inactive' : 'unknown_user', badCount, '');
+    if (badCount >= LOGIN_MAX_FAILURES) logLoginEvent(user || username, 'locked', badCount, 'تم قفل الدخول 10 دقائق');
     return {ok:false, error:'اسم المستخدم أو كلمة المرور غير صحيحة'};
   }
 
@@ -1045,7 +1047,7 @@ function verifyResetWorks(username, tempPassword) {
 
 /* ---------------- سجل محاولات الدخول ----------------
  * بيتسجل: محاولة فاشلة (لحساب موجود)، قفل 10 دقائق، ومحاولة أثناء القفل. الشيت login_attempts مش في ALL_TABLES.
- * محاولات أسماء مستخدمين مش موجودة ما بتتسجلش (عشان ما حدش يملّا الشيت). */
+ * بيتسجل كمان: اسم مستخدم غير موجود، وحساب موقوف. */
 const LOGIN_LOG_SHEET = 'login_attempts';
 const LOGIN_LOG_MAX_ROWS = 2000;
 
@@ -1061,7 +1063,8 @@ function loginLogSheet() {
   return sh;
 }
 
-// userOrName: كائن المستخدم، أو اسم المستخدم كنص (بندوّر عليه؛ لو مش موجود ما بنسجلش).
+// userOrName: كائن المستخدم، أو اسم المستخدم كنص. لو النص مش مطابق لأي حساب بنسجّله برضو كـ "اسم مستخدم غير موجود"
+// (مفيد جدًا لكشف الغلط في كتابة الاسم)، لكن بحد أقصى 40 سجل كل 10 دقائق عشان ما حدش يملّا الشيت بأسماء عشوائية.
 function logLoginEvent(userOrName, event, attempt, note) {
   try {
     let user = userOrName;
@@ -1069,6 +1072,15 @@ function logLoginEvent(userOrName, event, attempt, note) {
       const usersSheet = SpreadsheetApp.getActive().getSheetByName('users');
       const uname = normalizeUsername(userOrName);
       user = usersSheet ? readRows(usersSheet).find(function(u){ return normalizeUsername(u.username) === uname; }) : null;
+      if (!user) {
+        const cache = CacheService.getScriptCache();
+        const ck = 'unklog:' + Math.floor(Date.now() / 600000);
+        const c = Number(cache.get(ck) || 0);
+        if (c >= 40) return;
+        cache.put(ck, String(c + 1), 700);
+        user = {id: '', username: uname.slice(0, 80), name: ''};
+        if (event === 'failed') event = 'unknown_user';
+      }
     }
     if (!user) return;
     const sh = loginLogSheet();
@@ -1078,7 +1090,7 @@ function logLoginEvent(userOrName, event, attempt, note) {
       String(event), Number(attempt || 0), new Date().toISOString(), String(note || '')
     ]);
     if (sh.getLastRow() > LOGIN_LOG_MAX_ROWS + 1) sh.deleteRows(2, 500);
-  } catch (_) { /* التسجيل ما يوقفش الدخول */ }
+  } catch (err) { try { console.error('logLoginEvent: ' + err); } catch (_) {} /* التسجيل ما يوقفش الدخول */ }
 }
 
 function handleListLoginAttempts(session) {
