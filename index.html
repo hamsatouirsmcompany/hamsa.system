@@ -2336,6 +2336,7 @@
     });
     if(state.user.role==='admin'){
       groups.admin.push(`<button class="nav-item ${state.view==='permissions'?'active':''}" data-view="permissions">🔐<span>الصلاحيات</span></button>`);
+      groups.admin.push(`<button class="nav-item ${state.view==='login_attempts'?'active':''}" data-view="login_attempts">🚨<span>محاولات الدخول</span></button>`);
       groups.admin.push(`<button class="nav-item ${state.view==='password_requests'?'active':''}" data-view="password_requests">🔑<span>طلبات كلمة المرور${state.pwrPending?` <b style="background:var(--danger);color:#fff;border-radius:20px;padding:1px 8px;font-size:11px;margin-inline-start:6px;">${Number(state.pwrPending)}</b>`:''}</span></button>`);
     }
     // "الاشتراكات الملغاة" مش موديول مستقل في MODULES — هي نفس بيانات
@@ -2440,6 +2441,7 @@
     else if(state.view==='pr_teams') await renderPRHierarchy(page);
     else if(state.view==='permissions') await renderPermissionsSection(page);
     else if(state.view==='password_requests') await renderPasswordRequestsSection(page);
+    else if(state.view==='login_attempts') await renderLoginAttemptsSection(page);
     else if(state.view==='teams') await renderTeamsSection(page);
     else if(state.view==='analytics') await renderAnalytics(page, analyticsAccessibleModules());
     else if(state.view==='accommodation') await renderAccommodationSection(page);
@@ -2546,6 +2548,34 @@
       b.disabled=true;
       try{ await authRequest('deletePasswordRequests',{ids:[req.id]}); showToast('تم مسح الطلب','ok'); render(); }
       catch(err){ alert(err.message||'فشل المسح'); b.disabled=false; }
+    }));
+  }
+
+  // صفحة المدير: سجل محاولات الدخول الفاشلة والقفل (10 دقائق).
+  async function renderLoginAttemptsSection(page){
+    if(state.user.role!=='admin') return;
+    page.innerHTML = `<div class="page-head"><h2>🚨 محاولات الدخول</h2></div>
+      <div class="card" id="la-card"><div class="page-inline-loading">⏳ جاري التحميل…</div></div>`;
+    const card = document.getElementById('la-card');
+    let d;
+    try{ d = await authRequest('listLoginAttempts',{}); }
+    catch(err){ card.innerHTML = `<div class="error-box">${esc(err.message||'تعذر التحميل')}</div>`; return; }
+    const rows = d.rows||[], locked = d.locked||[];
+    const fmt = v=>{ const t=new Date(v); return isNaN(t) ? '' : t.toLocaleString('ar-EG',{dateStyle:'medium',timeStyle:'short'}); };
+    const badge = ev => ev==='locked' ? '<span class="badge red">🔒 تم القفل '+(d.lockMinutes||10)+' دقائق</span>'
+      : ev==='blocked' ? '<span class="badge gold">محاولة أثناء القفل</span>' : '<span class="badge gold">كلمة مرور خاطئة</span>';
+    card.innerHTML = `
+      ${locked.length?`<div class="error-box" style="margin-bottom:14px;"><b>مقفولون الآن:</b>
+        ${locked.map(u=>`<span style="display:inline-flex;gap:8px;align-items:center;margin-inline-start:12px;">${esc(u.name)} (<span dir="ltr">${esc(u.username)}</span>)
+          <button class="btn-secondary" style="padding:4px 10px;" data-unlock="${esc(u.username)}">فك القفل</button></span>`).join('')}</div>`:''}
+      ${rows.length?`<div class="table-wrap"><table><thead><tr><th>الوقت</th><th>الموظف</th><th>اسم المستخدم</th><th>الحدث</th><th>رقم المحاولة</th></tr></thead>
+        <tbody>${rows.map(r=>`<tr><td>${esc(fmt(r.createdAt))}</td><td>${esc(r.name)}</td><td dir="ltr" style="text-align:right;">${esc(r.username)}</td>
+          <td>${badge(r.event)}</td><td>${r.event==='failed'||r.event==='locked'?esc(String(r.attempt||'')):'—'}</td></tr>`).join('')}</tbody></table></div>`
+        :'<div class="assumption-note">لا توجد محاولات دخول فاشلة مسجّلة.</div>'}`;
+    card.querySelectorAll('button[data-unlock]').forEach(b=>b.addEventListener('click', async ()=>{
+      b.disabled=true;
+      try{ await authRequest('unlockLogin',{username:b.dataset.unlock}); showToast('تم فك القفل','ok'); render(); }
+      catch(err){ alert(err.message||'فشلت العملية'); b.disabled=false; }
     }));
   }
 

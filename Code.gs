@@ -145,6 +145,12 @@ function doPost(e) {
     if (action === 'resolvePasswordRequest') {
       return json(handleResolvePasswordRequest(session, body.payload || {}));
     }
+    if (action === 'listLoginAttempts') {
+      return json(handleListLoginAttempts(session));
+    }
+    if (action === 'unlockLogin') {
+      return json(handleUnlockLogin(session, body.payload || {}));
+    }
     if (action === 'listUserAccounts') {
       return json(handleListUserAccounts(session));
     }
@@ -541,6 +547,11 @@ function checkLoginRateLimit(username) {
   const cache = CacheService.getScriptCache();
   const count = Number(cache.get(loginRateKey(username)) || 0);
   if (count >= LOGIN_MAX_FAILURES) {
+    // نسجّل "محاولة أثناء القفل" مرة واحدة كل دقيقة لكل مستخدم عشان الشيت ما يتملاش.
+    try {
+      const bk = 'lockblk:' + normalizeUsername(username).slice(0, 80);
+      if (!cache.get(bk)) { cache.put(bk, '1', 60); logLoginEvent(username, 'blocked', count, ''); }
+    } catch (_) {}
     throw new Error('محاولات دخول كثيرة. حاول مرة أخرى بعد 10 دقائق.');
   }
 }
@@ -550,6 +561,7 @@ function recordLoginFailure(username) {
   const key = loginRateKey(username);
   const count = Number(cache.get(key) || 0) + 1;
   cache.put(key, String(count), LOGIN_LOCK_SECONDS);
+  return count;
 }
 
 function clearLoginFailures(username) {
@@ -622,7 +634,9 @@ function handleLogin(username, password) {
   }
 
   if (!verifyPassword(user, password)) {
-    recordLoginFailure(username);
+    const failCount = recordLoginFailure(username);
+    logLoginEvent(user, 'failed', failCount, '');
+    if (failCount >= LOGIN_MAX_FAILURES) logLoginEvent(user, 'locked', failCount, 'تم قفل الدخول 10 دقائق');
     return {ok:false, error:'اسم المستخدم أو كلمة المرور غير صحيحة'};
   }
 
@@ -1026,6 +1040,72 @@ function verifyResetWorks(username, tempPassword) {
   }
   if (String(first.status || 'active') === 'inactive') return {ok:false, error:'الحساب موقوف، فعّله أولًا'};
   if (!verifyPassword(first, tempPassword)) return {ok:false, error:'تعذّر التحقق من كلمة المرور بعد الحفظ، أعد المحاولة'};
+  return {ok:true};
+}
+
+/* ---------------- سجل محاولات الدخول ----------------
+ * بيتسجل: محاولة فاشلة (لحساب موجود)، قفل 10 دقائق، ومحاولة أثناء القفل. الشيت login_attempts مش في ALL_TABLES.
+ * محاولات أسماء مستخدمين مش موجودة ما بتتسجلش (عشان ما حدش يملّا الشيت). */
+const LOGIN_LOG_SHEET = 'login_attempts';
+const LOGIN_LOG_MAX_ROWS = 2000;
+
+function loginLogSheet() {
+  const ss = SpreadsheetApp.getActive();
+  let sh = ss.getSheetByName(LOGIN_LOG_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(LOGIN_LOG_SHEET);
+    const cols = ['id','userId','username','name','event','attempt','createdAt','note'];
+    sh.getRange(1, 1, 1, cols.length).setValues([cols]);
+    sh.setFrozenRows(1);
+  }
+  return sh;
+}
+
+// userOrName: كائن المستخدم، أو اسم المستخدم كنص (بندوّر عليه؛ لو مش موجود ما بنسجلش).
+function logLoginEvent(userOrName, event, attempt, note) {
+  try {
+    let user = userOrName;
+    if (typeof userOrName === 'string') {
+      const usersSheet = SpreadsheetApp.getActive().getSheetByName('users');
+      const uname = normalizeUsername(userOrName);
+      user = usersSheet ? readRows(usersSheet).find(function(u){ return normalizeUsername(u.username) === uname; }) : null;
+    }
+    if (!user) return;
+    const sh = loginLogSheet();
+    sh.appendRow([
+      'log_' + Utilities.getUuid().replace(/-/g, ''),
+      String(user.id || ''), String(user.username || ''), String(user.name || ''),
+      String(event), Number(attempt || 0), new Date().toISOString(), String(note || '')
+    ]);
+    if (sh.getLastRow() > LOGIN_LOG_MAX_ROWS + 1) sh.deleteRows(2, 500);
+  } catch (_) { /* التسجيل ما يوقفش الدخول */ }
+}
+
+function handleListLoginAttempts(session) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const sh = SpreadsheetApp.getActive().getSheetByName(LOGIN_LOG_SHEET);
+  const rows = sh ? readRows(sh) : [];
+  rows.sort(function(a, b){ return String(b.createdAt || '').localeCompare(String(a.createdAt || '')); });
+  const cache = CacheService.getScriptCache();
+  const seen = {}, locked = [];
+  rows.forEach(function(r){
+    const u = normalizeUsername(r.username);
+    if (seen[u]) return;
+    seen[u] = true;
+    // مقفول حاليًا = لسه مفتاح العدّاد موجود وعدده وصل للحد.
+    if (Number(cache.get(loginRateKey(u)) || 0) >= LOGIN_MAX_FAILURES) {
+      locked.push({username: String(r.username || ''), name: String(r.name || '')});
+    }
+  });
+  return {ok:true, rows: rows.slice(0, 300), locked: locked, lockMinutes: LOGIN_LOCK_SECONDS / 60};
+}
+
+function handleUnlockLogin(session, payload) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const username = normalizeUsername(payload.username || '');
+  if (!username) return {ok:false, error:'بيانات غير صحيحة'};
+  clearLoginFailures(username);
+  try { CacheService.getScriptCache().remove('lockblk:' + username.slice(0, 80)); } catch (_) {}
   return {ok:true};
 }
 
