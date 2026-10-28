@@ -1008,6 +1008,24 @@ function handleDeletePasswordRequests(session, payload) {
   }
 }
 
+// بعد تعيين كلمة مرور: نتأكد إن الدخول هينجح فعلًا بنفس طريقة handleLogin (أول حساب بنفس اسم المستخدم).
+// بيكشف حالة وجود حسابين بنفس اسم المستخدم (التعيين بيروح لواحد والدخول بيقرأ التاني).
+function verifyResetWorks(username, tempPassword) {
+  resetRowsMemo();
+  const sh = SpreadsheetApp.getActive().getSheetByName('users');
+  const rows = sh ? readRows(sh) : [];
+  const uname = normalizeUsername(username);
+  const matches = rows.filter(function(x){ return normalizeUsername(x.username) === uname; });
+  if (!matches.length) return {ok:false, error:'لم يتم العثور على الحساب بعد الحفظ'};
+  const first = matches[0];
+  if (matches.length > 1 && !verifyPassword(first, tempPassword)) {
+    return {ok:false, error:'يوجد ' + matches.length + ' حسابات بنفس اسم المستخدم "' + uname + '" والدخول بيقرأ الحساب الأول (' + String(first.name || '') + (String(first.status || 'active') === 'inactive' ? ' — موقوف' : '') + '). احذف أو غيّر اسم المستخدم للحسابات المكررة من شيت users ثم أعد التعيين.'};
+  }
+  if (String(first.status || 'active') === 'inactive') return {ok:false, error:'الحساب موقوف، فعّله أولًا'};
+  if (!verifyPassword(first, tempPassword)) return {ok:false, error:'تعذّر التحقق من كلمة المرور بعد الحفظ، أعد المحاولة'};
+  return {ok:true};
+}
+
 // قائمة كل الحسابات للمدير: الاسم + اسم المستخدم + الدور + الحالة. (كلمات المرور مخزّنة مُشفّرة ومش ممكن تتعرض.)
 function handleListUserAccounts(session) {
   if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
@@ -1056,6 +1074,8 @@ function handleAdminResetPassword(session, payload) {
     invalidateCachedRows('users');
     clearLoginFailures(user.username);
     SpreadsheetApp.flush();
+    const chk = verifyResetWorks(user.username, temp);
+    if (!chk.ok) return chk;
     return {ok:true, tempPassword:temp, generated:generated, username:String(user.username || ''), name:String(user.name || '')};
   } finally {
     try { lock.releaseLock(); } catch (_) {}
@@ -1125,6 +1145,8 @@ function handleResolvePasswordRequest(session, payload) {
     req.note = String(payload.note || '').trim().slice(0, 300);
     upsertRow(sh, req, info);
     SpreadsheetApp.flush();
+    const chk2 = verifyResetWorks(user.username, temp);
+    if (!chk2.ok) return chk2;
     return {ok:true, status:'approved', tempPassword:temp, generated:generated, username:String(user.username || '')};
   } finally {
     try { lock.releaseLock(); } catch (_) {}
