@@ -148,6 +148,9 @@ function doPost(e) {
     if (action === 'listUserAccounts') {
       return json(handleListUserAccounts(session));
     }
+    if (action === 'deleteUserAccount') {
+      return json(handleDeleteUserAccount(session, body.payload || {}));
+    }
     if (action === 'adminResetPassword') {
       return json(handleAdminResetPassword(session, body.payload || {}));
     }
@@ -1041,6 +1044,38 @@ function handleListUserAccounts(session) {
   });
   out.sort(function(a, b){ return a.name.localeCompare(b.name, 'ar'); });
   return {ok:true, rows: out};
+}
+
+// مسح حساب دخول (من شيت users فقط — سجل الموظف نفسه ما بيتأثرش). للمدير فقط.
+function handleDeleteUserAccount(session, payload) {
+  if (String(session.role || '') !== 'admin') return {ok:false, error:'Forbidden'};
+  const userId = String(payload.userId || '');
+  if (!userId) return {ok:false, error:'بيانات غير صحيحة'};
+  if (userId === String(session.uid || '')) return {ok:false, error:'لا يمكنك مسح حسابك أنت'};
+
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(25000)) return {ok:false, error:'Server busy, try again'};
+  try {
+    resetRowsMemo();
+    const sh = SpreadsheetApp.getActive().getSheetByName('users');
+    if (!sh) return {ok:false, error:'الحسابات غير متاحة'};
+    const rows = readRows(sh);
+    const target = rows.find(function(u){ return String(u.id || '') === userId; });
+    if (!target) return {ok:false, error:'الحساب غير موجود'};
+    if (String(target.role || '') === 'admin') {
+      const otherAdmins = rows.filter(function(u){
+        return String(u.id || '') !== userId && String(u.role || '') === 'admin' && String(u.status || 'active') !== 'inactive';
+      });
+      if (!otherAdmins.length) return {ok:false, error:'لا يمكن مسح آخر مدير في النظام'};
+    }
+    deleteRowsBatch(sh, [userId]);
+    invalidateCachedRows('users');
+    SpreadsheetApp.flush();
+    resetRowsMemo();
+    return {ok:true, username:String(target.username || '')};
+  } finally {
+    try { lock.releaseLock(); } catch (_) {}
+  }
 }
 
 // المدير يعيّن كلمة مرور مؤقتة جديدة لأي حساب (بتتعرض له مرة واحدة، والموظف بيتجبر يغيّرها عند أول دخول).
